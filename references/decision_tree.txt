@@ -1,0 +1,1 @@
+A binary decision tree classifier built from scratch using numpy that splits nodes by maximising Shannon entropy information gain. Supports configurable maximum depth to control overfitting and stores the tree as a nested dictionary with recursive prediction.

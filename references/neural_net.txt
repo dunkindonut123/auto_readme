@@ -1,0 +1,1 @@
+A minimal two-layer feedforward neural network implemented using only numpy that supports sigmoid and ReLU activations and trains via backpropagation with gradient descent. Intended for educational purposes and small tabular datasets rather than production use.

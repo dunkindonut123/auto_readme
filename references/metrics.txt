@@ -1,0 +1,1 @@
+Provides standard classification and regression evaluation metrics including accuracy, precision, recall, F1-score, and mean squared error. All metrics are implemented from scratch using plain Python with no external dependencies, operating directly on lists of predictions and ground-truth labels.

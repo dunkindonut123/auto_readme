@@ -1,0 +1,1 @@
+Tools for building and displaying confusion matrices for multi-class classification, representing how many samples of each true class were predicted as each other class. Includes a text-based pretty-printer and a per-class precision, recall, and F1-score report that requires no external plotting libraries.

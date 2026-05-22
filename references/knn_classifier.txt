@@ -1,0 +1,1 @@
+A k-Nearest Neighbours classifier built from scratch using numpy that stores all training samples and classifies new points by majority vote among the k closest neighbours using Euclidean distance. No explicit training is required; the model memorises the dataset and searches it at prediction time.

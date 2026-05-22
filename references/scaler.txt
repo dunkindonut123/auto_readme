@@ -1,0 +1,1 @@
+Provides MinMaxScaler and StandardScaler for normalising numerical features before model training. MinMaxScaler maps each feature to the range zero to one, while StandardScaler applies z-score normalisation to produce zero mean and unit variance. Both follow a fit-then-transform pattern to prevent data leakage.

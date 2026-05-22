@@ -1,0 +1,1 @@
+An in-memory nearest-neighbour search index that stores document embeddings as numpy arrays and retrieves the most similar documents to a query using cosine similarity. Intended for small to medium corpora where a heavyweight index library is unnecessary.

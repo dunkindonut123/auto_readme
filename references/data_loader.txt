@@ -1,0 +1,1 @@
+Utilities for splitting datasets into train, validation, and test subsets with optional shuffling and reproducible seeds, including a stratified split that preserves class distribution. Also provides a batch generator that yields fixed-size chunks of data for mini-batch training without loading the full dataset into memory.

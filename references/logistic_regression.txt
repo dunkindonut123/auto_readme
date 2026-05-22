@@ -1,0 +1,1 @@
+Binary logistic regression trained with gradient descent that models class probability using a sigmoid-activated linear combination of features. Supports L2 regularisation to reduce overfitting and exposes both raw probability outputs and hard binary label predictions.

@@ -1,0 +1,1 @@
+A key-value hyperparameter store for machine learning experiments that supports dot-notation access for nested settings, JSON serialisation and deserialisation, and default value fallback. Designed to make experiment configurations reproducible and easy to log alongside model checkpoints.

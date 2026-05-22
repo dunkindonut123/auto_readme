@@ -1,0 +1,1 @@
+A collection of text preprocessing functions for removing HTML tags, normalising whitespace, converting to lowercase, and stripping punctuation. Exposes both individual steps and a single clean_text function that applies the full pipeline, intended as a preprocessing step before tokenization.
