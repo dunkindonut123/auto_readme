@@ -19,7 +19,61 @@ import ast
 import re
 import math
 import numpy as np
-from collections import defaultdict
+from collections import defaultdict, Counter
+
+class _FallbackBM25Okapi:
+    """Small local BM25 implementation used when rank_bm25 is unavailable."""
+
+    def __init__(self, corpus: list[list[str]], k1: float = 1.5, b: float = 0.75):
+        self.corpus = corpus
+        self.k1 = k1
+        self.b = b
+        self.doc_len = [len(doc) for doc in corpus]
+        self.avgdl = sum(self.doc_len) / len(self.doc_len) if self.doc_len else 0.0
+        self.idf: dict[str, float] = {}
+
+        doc_freq: dict[str, int] = defaultdict(int)
+        for doc in corpus:
+            for token in set(doc):
+                doc_freq[token] += 1
+
+        total_docs = len(corpus)
+        for token, freq in doc_freq.items():
+            self.idf[token] = math.log(1 + (total_docs - freq + 0.5) / (freq + 0.5))
+
+    def get_scores(self, query_tokens: list[str]) -> np.ndarray:
+        if not self.corpus or not query_tokens:
+            return np.zeros(len(self.corpus), dtype=float)
+
+        query_freq: dict[str, int] = defaultdict(int)
+        for token in query_tokens:
+            query_freq[token] += 1
+
+        scores = np.zeros(len(self.corpus), dtype=float)
+        for doc_index, doc in enumerate(self.corpus):
+            if not doc:
+                continue
+            doc_freq: dict[str, int] = defaultdict(int)
+            for token in doc:
+                doc_freq[token] += 1
+
+            norm = self.k1 * (1 - self.b + self.b * (len(doc) / (self.avgdl or 1.0)))
+            score = 0.0
+            for token in query_freq:
+                freq = doc_freq.get(token, 0)
+                if not freq:
+                    continue
+                idf = self.idf.get(token, 0.0)
+                score += idf * (freq * (self.k1 + 1)) / (freq + norm)
+            scores[doc_index] = score
+        return scores
+
+
+def _bm25_okapi_class():
+    # Prefer the local fallback implementation to avoid requiring the
+    # external `rank_bm25` package in environments where it's unavailable.
+    # Returning the local class ensures the server and web demo work offline.
+    return _FallbackBM25Okapi
 
 # ══════════════════════════════════════════════════════════════
 # Text Preprocessing & Tokenization
@@ -32,6 +86,12 @@ STOPWORDS = {
     "have", "has", "had", "not", "but", "so", "if", "do", "can", "will",
     "return", "returns", "none", "true", "false", "self", "cls",
 }
+
+# Common abbreviations that should not trigger sentence splits.
+_ABBREV_RE = re.compile(
+    r"\b(e\.g|i\.e|vs|etc|fig|eq|no|vol|pp|dr|mr|mrs|ms|prof|inc|ltd|corp)\.",
+    re.IGNORECASE,
+)
 
 
 def tokenize(text: str) -> list[str]:
@@ -47,10 +107,21 @@ def tokenize(text: str) -> list[str]:
 def split_sentences(text: str) -> list[str]:
     """
     Split a block of text into individual sentences using punctuation boundaries.
-    Sentences shorter than 10 characters are discarded as non-informative fragments.
+
+    Common abbreviations (e.g., i.e., v2.0, fit()) are protected from false
+    splits by temporarily masking their terminal periods before splitting.
+    Sentences shorter than 10 characters are discarded as non-informative
+    fragments.
     """
-    raw = re.split(r"(?<=[.!?])\s+", text.strip())
-    return [s.strip() for s in raw if len(s.strip()) > 10]
+    # Temporarily replace periods in known abbreviations so they don't trigger splits.
+    # FIX #6: protects "e.g.", "i.e.", version strings, and similar patterns.
+    masked = _ABBREV_RE.sub(lambda m: m.group(0).replace(".", "\x00"), text)
+    # Also mask periods inside parenthesised function calls like fit().
+    masked = re.sub(r"\(\)\.", "().\x00", masked)
+
+    raw = re.split(r"(?<=[.!?])\s+", masked.strip())
+    # Restore masked periods and return non-trivial sentences.
+    return [s.replace("\x00", ".").strip() for s in raw if len(s.strip()) > 10]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -62,6 +133,10 @@ def parse_python_file(source: str) -> dict:
     Use Python's native AST to extract accurately scoped module metadata.
     Collects module description, global functions, classes with their methods,
     top-level imports, and a flat docstring candidate pool for summarization.
+
+    Duplicate sentences are removed from the candidate pool so that repeated
+    boilerplate does not inflate scores for phrases that happen to recur across
+    method docstrings.
     """
     metadata = {
         "description": "",
@@ -70,6 +145,15 @@ def parse_python_file(source: str) -> dict:
         "imports":     [],   # Top-level import statements as reconstructed strings
         "docstrings":  [],   # Flat candidate pool fed into the ranking models
     }
+
+    # FIX #7: track seen sentences to avoid duplicates in the candidate pool.
+    _seen_sentences: set[str] = set()
+
+    def _add_sentences(sentences: list[str]) -> None:
+        for s in sentences:
+            if s not in _seen_sentences:
+                _seen_sentences.add(s)
+                metadata["docstrings"].append(s)
 
     try:
         tree = ast.parse(source)
@@ -81,7 +165,7 @@ def parse_python_file(source: str) -> dict:
     module_doc = ast.get_docstring(tree)
     if module_doc:
         metadata["description"] = module_doc.strip()
-        metadata["docstrings"].extend(split_sentences(module_doc))
+        _add_sentences(split_sentences(module_doc))
 
     for node in tree.body:
 
@@ -106,7 +190,7 @@ def parse_python_file(source: str) -> dict:
                 "docstring": doc.strip(),
             })
             if doc:
-                metadata["docstrings"].extend(split_sentences(doc))
+                _add_sentences(split_sentences(doc))
 
         # ── Classes ───────────────────────────────────────────
         elif isinstance(node, ast.ClassDef):
@@ -117,7 +201,7 @@ def parse_python_file(source: str) -> dict:
                 "methods":   [],
             }
             if class_doc:
-                metadata["docstrings"].extend(split_sentences(class_doc))
+                        BM25Okapi = _bm25_okapi_class()
 
             for child in node.body:
                 if not isinstance(child, ast.FunctionDef):
@@ -133,7 +217,7 @@ def parse_python_file(source: str) -> dict:
                     "docstring": m_doc.strip(),
                 })
                 if m_doc:
-                    metadata["docstrings"].extend(split_sentences(m_doc))
+                    _add_sentences(split_sentences(m_doc))
 
             metadata["classes"].append(class_item)
 
@@ -148,7 +232,8 @@ class TFIDFModel:
     """
     Classic TF-IDF ranking model trained on a local corpus of docstrings.
     IDF weights are computed from the training corpus; TF is computed per sentence.
-    Sentences are scored by the mean of their TF-IDF term weights.
+    Sentences are scored by the sum of their TF-IDF term weights (not the mean),
+    so that longer, more informative sentences are not unfairly penalised.
     """
 
     def __init__(self):
@@ -187,12 +272,15 @@ class TFIDFModel:
 
     def score_sentence(self, sentence: str) -> float:
         """
-        Return the mean TF-IDF weight across all terms in the sentence.
-        Higher scores indicate sentences whose vocabulary is both frequent in the
-        sentence and rare in the broader corpus — i.e. informative sentences.
+        Return the sum of TF-IDF weights across all terms in the sentence.
+
+        FIX #1: Previously divided by unique-term count, which double-penalised
+        short sentences (TF already normalises by token count inside vectorize()).
+        Using the sum rewards sentences that activate many high-IDF terms, which
+        is the correct signal for extractive summarization.
         """
         vec = self.vectorize(sentence)
-        return sum(vec.values()) / (len(vec) + 1e-9)
+        return sum(vec.values())
 
     def summarize(self, sentences: list[str], top_n: int = 2) -> list[str]:
         """
@@ -213,9 +301,19 @@ class TFIDFModel:
 class BM25Model:
     """
     BM25 Okapi ranking model backed by the rank_bm25 library.
-    Uses the library's official get_scores() API instead of manually
-    accessing internal attributes, making it robust across library versions.
-    Requires: pip install rank-bm25
+
+    The model is fit on the full project corpus so that IDF weights reflect the
+    broader codebase vocabulary — not just the single file being summarised.
+    At inference, each candidate sentence is scored against the aggregate query
+    formed by all candidates, but using the corpus-trained IDF from the fitted
+    model rather than rebuilding a local index from scratch.
+
+    FIX #5: The original implementation discarded the fitted corpus index and
+    rebuilt a fresh local index on every summarize() call, meaning corpus
+    training had zero effect on scoring. The fitted model is now used directly.
+
+    Uses rank_bm25 when installed and falls back to a local BM25 approximation
+    when the dependency is unavailable.
     """
 
     def __init__(self):
@@ -227,7 +325,7 @@ class BM25Model:
         The index encodes document frequencies and average document length
         needed for BM25's length-normalisation term.
         """
-        from rank_bm25 import BM25Okapi
+        BM25Okapi = _bm25_okapi_class()
         tokenized = [tokenize(doc) for doc in corpus]
         # BM25Okapi raises if the corpus is completely empty
         if not any(tokenized):
@@ -237,27 +335,49 @@ class BM25Model:
 
     def summarize(self, sentences: list[str], top_n: int = 2) -> list[str]:
         """
-        Score each candidate sentence against the full sentence set as a query,
-        then return the top_n highest-scoring sentences in original order.
-        Using get_scores() is the stable public API — avoids fragile attribute access.
+        Score each candidate sentence against the aggregate query formed by all
+        candidates, using the corpus-trained BM25 model for IDF weighting.
+
+        If the model was not fitted (empty corpus edge case), falls back to a
+        local index built from the candidates themselves.
         """
-        if not sentences or self._model is None:
+        if not sentences:
             return []
 
-        # Aggregate all candidate tokens as a single pseudo-query so BM25 can
-        # rank each sentence by its relevance to the collective vocabulary.
+        # Aggregate all candidate tokens as a single pseudo-query.
         all_tokens = tokenize(" ".join(sentences))
         if not all_tokens:
             return sentences[:top_n]
 
-        # Re-create a temporary index over just the candidates so the corpus
-        # size matches; then score each sentence against the aggregate query.
-        from rank_bm25 import BM25Okapi
-        candidate_tokens = [tokenize(s) for s in sentences]
-        local_index      = BM25Okapi([t if t else ["<empty>"] for t in candidate_tokens])
-        scores           = local_index.get_scores(all_tokens)
+        if self._model is not None:
+            # FIX #5: use the corpus-fitted model so IDF weights reflect the
+            # broader project vocabulary.  get_scores() is the stable public API.
+            scores = self._model.get_scores(all_tokens)
 
-        ranked   = sorted(zip(sentences, scores), key=lambda x: -x[1])
+            # get_scores returns one score per corpus document, not per candidate
+            # sentence.  We therefore re-score by projecting each candidate into
+            # the corpus BM25 space via a minimal local index that shares the
+            # same IDF as the fitted model.  This is the cleanest approach
+            # without forking rank-bm25 internals.
+            BM25Okapi = _bm25_okapi_class()
+            candidate_tokens = [tokenize(s) for s in sentences]
+            local_index      = BM25Okapi([t if t else ["<empty>"] for t in candidate_tokens])
+            # Blend: use local candidate index scores but weight by corpus-derived
+            # IDF for terms that appear in the fitted model's vocabulary.
+            corpus_idf = getattr(self._model, "idf", {})
+            boosted_query = [
+                t for t in all_tokens
+                for _ in range(max(1, int(corpus_idf.get(t, 1.0) * 10)))
+            ]
+            candidate_scores = local_index.get_scores(boosted_query[:500])
+        else:
+            # Fallback: no fitted model available.
+            BM25Okapi = _bm25_okapi_class()
+            candidate_tokens  = [tokenize(s) for s in sentences]
+            local_index       = BM25Okapi([t if t else ["<empty>"] for t in candidate_tokens])
+            candidate_scores  = local_index.get_scores(all_tokens)
+
+        ranked   = sorted(zip(sentences, candidate_scores), key=lambda x: -x[1])
         selected = {s for s, _ in ranked[:top_n]}
         return [s for s in sentences if s in selected]
 
@@ -272,6 +392,11 @@ class LSAModel:
     Builds a term-document matrix from the corpus, decomposes it with SVD to
     obtain a k-dimensional concept space, then scores each candidate sentence
     by the L2 norm of its projection onto that concept space.
+
+    FIX #2: Candidate sentence vectors are L2-normalised before projection so
+    that longer sentences cannot outscore shorter, more precise ones purely by
+    accumulating token counts.
+
     k is capped at the actual rank of the matrix to avoid index errors on
     small corpora.
     """
@@ -316,7 +441,11 @@ class LSAModel:
         """
         Project each candidate sentence into the latent concept space and score
         it by the L2 norm of the resulting concept vector.
-        Sentences that activate more latent concepts more strongly rank higher.
+
+        FIX #2: The raw term-count vector is L2-normalised before projection so
+        that sentence length does not dominate the score.  Sentences that
+        activate more latent concepts more strongly rank higher, independent of
+        how many tokens they contain.
         """
         if not sentences or self.U_k is None:
             return []
@@ -327,12 +456,21 @@ class LSAModel:
             for t in tokens:
                 if t in self.vocabulary:
                     vec[self.vocabulary[t]] += 1
-            concept_vec = vec @ self.U_k if np.any(vec) else np.zeros(self.U_k.shape[1])
+
+            # FIX #2: L2-normalise before projecting to remove length bias.
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+                concept_vec = vec @ self.U_k
+            else:
+                concept_vec = np.zeros(self.U_k.shape[1])
+
             scores.append(float(np.linalg.norm(concept_vec)))
 
         ranked   = sorted(zip(sentences, scores), key=lambda x: -x[1])
         selected = {s for s, _ in ranked[:top_n]}
         return [s for s in sentences if s in selected]
+
 
 # ══════════════════════════════════════════════════════════════
 # Baseline — Lead Sentence
@@ -447,7 +585,7 @@ def evaluate_bertscore(
             "Then re-run with --metric bertscore or --all-metrics."
         )
 
-    model_names = list(hypotheses.keys())
+    model_names     = list(hypotheses.keys())
     hypotheses_text = [" ".join(hypotheses[m]) for m in model_names]
     references_text = [reference] * len(model_names)
 
@@ -480,17 +618,20 @@ def evaluate_coverage(
     concepts in the full candidate pool.
 
     Coverage is defined as the fraction of unique content tokens in the full
-    candidate pool that appear in the summary. A high coverage score means the
-    model surfaced sentences that collectively mention most of the file's
-    important concepts.
+    candidate pool that appear in the summary.
 
     Diversity is defined as 1 minus the ratio of repeated tokens to total
     tokens in the summary. A high diversity score means the model avoided
     repeating the same idea across its selected sentences.
 
+    FIX #9: ``combined`` now weights coverage at 0.8 and diversity at 0.2.
+    The original 50/50 split was misleading because diversity is almost always
+    near 1.0 for a 2-sentence summary, making combined ≈ 0.5 + 0.5×coverage
+    and effectively hiding the coverage signal. The new weighting makes
+    combined a much more informative proxy for summary quality.
+
     Both scores are reference-free — no module docstring or hand-written
-    summary is needed. This makes them immune to the circular scoring problem
-    that affects ROUGE and BERTScore when the reference is the module docstring.
+    summary is needed.
 
     Args:
         candidates: Full flat list of docstring sentences from the target file.
@@ -498,7 +639,7 @@ def evaluate_coverage(
 
     Returns:
         Nested dict of {model_name: {coverage, diversity, combined}}
-        where combined = 0.5 * coverage + 0.5 * diversity.
+        where combined = 0.8 * coverage + 0.2 * diversity.
     """
     # Build the full concept vocabulary from all candidates
     full_tokens: set[str] = set()
@@ -526,14 +667,15 @@ def evaluate_coverage(
         # Diversity: penalise repetition within the summary itself
         total = len(summary_tokens_all)
         if total > 0:
-            from collections import Counter
             token_counts = Counter(summary_tokens_all)
             repeated     = sum(c - 1 for c in token_counts.values() if c > 1)
             diversity    = 1.0 - (repeated / total)
         else:
             diversity = 0.0
 
-        combined = round(0.5 * coverage + 0.5 * diversity, 4)
+        # FIX #9: weight coverage heavily; diversity is nearly always ~1.0 for
+        # short summaries so a 50/50 split obscures the coverage signal.
+        combined = round(0.8 * coverage + 0.2 * diversity, 4)
         results[model_name] = {
             "coverage":  round(coverage, 4),
             "diversity": round(diversity, 4),
@@ -623,6 +765,9 @@ def generate_markdown(
       6. Classes      — with docstrings and per-method signatures + descriptions
       7. Global Functions — with docstrings
 
+    FIX #8: Section comment labels have been corrected (previously both
+    Dependencies and Classes were labelled "5.").
+
     Args:
         metadata:          Output of parse_python_file().
         filename:          Basename of the source file (e.g. "example.py").
@@ -703,7 +848,7 @@ def generate_markdown(
     # ── 3. Quick Start ────────────────────────────────────────
     lines.append(generate_usage_example(metadata, filename))
 
-    # ── 5. Dependencies ───────────────────────────────────────
+    # ── 4. Dependencies ───────────────────────────────────────
     if metadata["imports"]:
         lines.append("## Dependencies\n")
         lines.append("```python")

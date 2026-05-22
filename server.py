@@ -42,7 +42,7 @@ def _safe_filename(filename: str | None, fallback_index: int) -> str:
     return candidate
 
 
-def _parse_uploads(handler: BaseHTTPRequestHandler) -> tuple[list[dict], str, int]:
+def _parse_uploads(handler: BaseHTTPRequestHandler) -> tuple[list[dict], str, int, dict]:
     content_type = handler.headers.get("Content-Type", "")
     if "multipart/form-data" not in content_type:
         raise ValueError("Expected multipart/form-data request")
@@ -60,6 +60,8 @@ def _parse_uploads(handler: BaseHTTPRequestHandler) -> tuple[list[dict], str, in
     files: list[dict] = []
     metric = DEFAULT_METRIC
     top_n = DEFAULT_TOP_N
+    # Mapping of filename or stem -> reference text
+    references_map: dict[str, str] = {}
 
     for part in multipart_message.iter_parts():
         field_name = part.get_param("name", header="content-disposition")
@@ -70,6 +72,20 @@ def _parse_uploads(handler: BaseHTTPRequestHandler) -> tuple[list[dict], str, in
             filename = _safe_filename(part.get_filename(), len(files))
             content = part.get_payload(decode=True) or b""
             files.append({"filename": filename, "content": content})
+            continue
+
+        # Allow uploading reference text files. Field name can be 'reference' or 'references'.
+        if field_name in ("reference", "references") and part.get_filename():
+            ref_name = Path(part.get_filename()).name
+            try:
+                ref_text = (part.get_payload(decode=True) or b"").decode("utf-8")
+            except Exception:
+                ref_text = part.get_content() if isinstance(part.get_content(), str) else ""
+            if ref_text:
+                # store under both the filename and the stem for flexible lookup
+                stem = Path(ref_name).stem
+                references_map[ref_name] = ref_text
+                references_map[stem] = ref_text
             continue
 
         text_value = part.get_content()
@@ -86,10 +102,10 @@ def _parse_uploads(handler: BaseHTTPRequestHandler) -> tuple[list[dict], str, in
     if len(files) > MAX_FILES:
         raise ValueError(f"Upload at most {MAX_FILES} Python files")
 
-    return files, metric, top_n
+    return files, metric, top_n, references_map
 
 
-def _analyse_batch(files: list[dict], metric: str, top_n: int) -> dict:
+def _analyse_batch(files: list[dict], metric: str, top_n: int, references_map: dict | None = None) -> dict:
     with TemporaryDirectory(prefix="auto-readme-") as tmpdir:
         tmpdir_path = Path(tmpdir)
 
@@ -98,6 +114,20 @@ def _analyse_batch(files: list[dict], metric: str, top_n: int) -> dict:
             path = tmpdir_path / item["filename"]
             path.write_bytes(item["content"])
             file_paths.append(path)
+
+        # Merge repository-stored references with uploaded references_map
+        references_map = references_map or {}
+        repo_refs_dir = Path("references")
+        if repo_refs_dir.exists() and repo_refs_dir.is_dir():
+            for path in file_paths:
+                stem = path.stem
+                if stem not in references_map:
+                    candidate = repo_refs_dir / f"{stem}.txt"
+                    if candidate.exists():
+                        try:
+                            references_map[stem] = candidate.read_text(encoding="utf-8")
+                        except Exception:
+                            pass
 
         corpus = pipeline.build_local_corpus(tmpdir, verbose=False)
         tfidf_model, bm25_model, lsa_model, baseline_model = pipeline.fit_all_models(
@@ -109,6 +139,11 @@ def _analyse_batch(files: list[dict], metric: str, top_n: int) -> dict:
 
         for path in file_paths:
             file_args = SimpleNamespace(**vars(analysis_args))
+            # Prefer exact filename match, fall back to stem match for references
+            custom_ref = None
+            if references_map:
+                custom_ref = references_map.get(path.name) or references_map.get(path.stem)
+
             rouge_scores, bertscore_scores, coverage_scores, winning_model, hypotheses, metadata = pipeline.run_single_file(
                 str(path),
                 file_args,
@@ -117,6 +152,7 @@ def _analyse_batch(files: list[dict], metric: str, top_n: int) -> dict:
                 lsa_model,
                 baseline_model,
                 verbose=False,
+                custom_reference=custom_ref,
             )
 
             readme = re_eng.generate_markdown(
@@ -180,8 +216,8 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            files, metric, top_n = _parse_uploads(self)
-            payload = _analyse_batch(files, metric, top_n)
+            files, metric, top_n, references_map = _parse_uploads(self)
+            payload = _analyse_batch(files, metric, top_n, references_map)
             payload["warnings"] = []
             payload["max_files"] = MAX_FILES
             _send_json(self, payload)

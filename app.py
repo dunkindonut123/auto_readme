@@ -166,6 +166,11 @@ def run_all_summaries(
     }
 
 
+# ══════════════════════════════════════════════════════════════
+# Evaluation Table Printer
+# FIX #10: moved to module level so it is independently testable.
+# ══════════════════════════════════════════════════════════════
+
 def print_eval_table(
     rouge_scores:     dict[str, dict[str, float]],
     bertscore_scores: dict[str, dict[str, float]] | None,
@@ -227,6 +232,37 @@ def print_eval_table(
         print("─" * 52 + "\n")
 
     print(f"  Winner ({winning_metric}): {winning_model.upper()}\n")
+
+
+def _print_batch_summary(label: str, data: dict[str, list[float]], n_files: int) -> None:
+    """
+    Pretty-print the batch summary table for one metric group.
+
+    FIX #10: extracted from inside main() so it is independently importable
+    and testable without invoking the full CLI.
+
+    Args:
+        label:   Metric label shown in the table header (e.g. "rougeL").
+        data:    Mapping of model name → list of per-file scores.
+        n_files: Total number of files processed (used in the header line).
+    """
+    if not data:
+        return
+    print(f"\n{'─' * 56}")
+    print(f"  Batch summary — {label} across {n_files} file(s)")
+    print(f"{'─' * 56}")
+    print(f"  {'Model':<14} {'Mean':>8} {'Std':>8} {'Min':>8} {'Max':>8}")
+    print(f"{'─' * 56}")
+    for model, vals in sorted(data.items()):
+        arr = np.array(vals)
+        print(
+            f"  {model:<14}"
+            f" {arr.mean():>8.4f}"
+            f" {arr.std():>8.4f}"
+            f" {arr.min():>8.4f}"
+            f" {arr.max():>8.4f}"
+        )
+    print(f"{'─' * 56}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -306,11 +342,11 @@ def parse_args() -> argparse.Namespace:
 
 def run_single_file(
     target_filepath: str,
-    args,
-    tfidf_model,
-    bm25_model,
-    lsa_model,
-    baseline_model,
+    args: argparse.Namespace,
+    tfidf_model: re_eng.TFIDFModel,
+    bm25_model: re_eng.BM25Model,
+    lsa_model: re_eng.LSAModel,
+    baseline_model: re_eng.LeadSentenceBaseline,
     verbose: bool = True,
     custom_reference: str | None = None,
 ) -> tuple:
@@ -319,12 +355,20 @@ def run_single_file(
 
     Always computes ROUGE and Coverage. BERTScore is computed when
     args.all_metrics is True or when args.metric starts with 'bertscore'.
-    Returns (rouge_scores, bertscore_scores, coverage_scores,
-             winning_model, hypotheses, metadata).
+
+    FIX #3: args.metric is never mutated here. When BERTScore import fails and
+    the user requested a bertscore metric, the fallback metric is stored in the
+    local variable ``effective_metric`` rather than overwriting args.metric.
+    This prevents batch mode from silently switching all subsequent files to
+    rougeL after the first import failure.
 
     Args:
         custom_reference: Pre-loaded hand-written reference text, or None to
                           fall back to the module docstring.
+
+    Returns:
+        (rouge_scores, bertscore_scores, coverage_scores,
+         winning_model, hypotheses, metadata)
     """
     if verbose:
         print(f"[Parse] Processing: {target_filepath}")
@@ -355,6 +399,9 @@ def run_single_file(
         reference         = metadata["description"] or candidates[0]
         reference_is_weak = True
 
+    # FIX #3: use a local copy of the metric so we never mutate args.metric.
+    effective_metric = args.metric
+
     # ── ROUGE (always) ───────────────────────────────────────
     if verbose:
         print(f"[ROUGE] Evaluating summaries — "
@@ -364,7 +411,7 @@ def run_single_file(
     )
 
     # ── BERTScore (when requested) ───────────────────────────
-    want_bertscore = getattr(args, "all_metrics", False) or args.metric.startswith("bertscore")
+    want_bertscore = getattr(args, "all_metrics", False) or effective_metric.startswith("bertscore")
     bertscore_scores: dict | None = None
     if want_bertscore:
         if verbose:
@@ -375,9 +422,10 @@ def run_single_file(
             )
         except ImportError as e:
             print(f"  ⚠  {e}")
-            if args.metric.startswith("bertscore"):
+            if effective_metric.startswith("bertscore"):
                 print("  Falling back to rougeL for model election.")
-                args.metric = "rougeL"
+                # FIX #3: write to local variable only — args.metric is untouched.
+                effective_metric = "rougeL"
 
     # ── Coverage (always — reference-free) ───────────────────
     if verbose:
@@ -385,16 +433,16 @@ def run_single_file(
     coverage_scores = re_eng.evaluate_coverage(candidates, hypotheses)
 
     # ── Elect winner ─────────────────────────────────────────
-    if args.metric.startswith("bertscore") and bertscore_scores:
-        winning_model = re_eng.select_best_model(bertscore_scores, metric=args.metric)
-    elif args.metric in ("coverage", "diversity", "combined"):
-        winning_model = re_eng.select_best_model(coverage_scores, metric=args.metric)
+    if effective_metric.startswith("bertscore") and bertscore_scores:
+        winning_model = re_eng.select_best_model(bertscore_scores, metric=effective_metric)
+    elif effective_metric in ("coverage", "diversity", "combined"):
+        winning_model = re_eng.select_best_model(coverage_scores, metric=effective_metric)
     else:
-        winning_model = re_eng.select_best_model(rouge_scores, metric=args.metric)
+        winning_model = re_eng.select_best_model(rouge_scores, metric=effective_metric)
 
     if verbose:
         print_eval_table(rouge_scores, bertscore_scores, coverage_scores,
-                         winning_model, args.metric)
+                         winning_model, effective_metric)
 
     return rouge_scores, bertscore_scores, coverage_scores, winning_model, hypotheses, metadata
 
@@ -421,7 +469,7 @@ def main() -> None:
         if not os.path.exists(ref_path):
             print(f"[Error] Reference path not found: '{ref_path}'")
             sys.exit(1)
-        
+
         if os.path.isdir(ref_path):
             reference_is_dir = True
             if verbose:
@@ -464,7 +512,7 @@ def main() -> None:
 
         for py_path in py_files:
             print(f"\n  ── {os.path.basename(py_path)} ──")
-            
+
             # Resolve the reference dynamically for this specific file iteration
             file_specific_reference = None
             if args.reference:
@@ -501,40 +549,21 @@ def main() -> None:
             except Exception as exc:
                 print(f"    [Skip] {exc}")
 
-        def _print_batch_summary(label: str, data: dict[str, list[float]]) -> None:
-            if not data:
-                return
-            print(f"\n{'─'*56}")
-            print(f"  Batch summary — {label} across {len(py_files)} file(s)")
-            print(f"{'─'*56}")
-            print(f"  {'Model':<14} {'Mean':>8} {'Std':>8} {'Min':>8} {'Max':>8}")
-            print(f"{'─'*56}")
-            for model, vals in sorted(data.items()):
-                arr = np.array(vals)
-                print(
-                    f"  {model:<14}"
-                    f" {arr.mean():>8.4f}"
-                    f" {arr.std():>8.4f}"
-                    f" {arr.min():>8.4f}"
-                    f" {arr.max():>8.4f}"
-                )
-            print(f"{'─'*56}")
-
-        _print_batch_summary("rougeL",       all_rouge)
-        _print_batch_summary("bertscore_f1", all_bert)
-        _print_batch_summary("coverage",     all_coverage)
+        n = len(py_files)
+        _print_batch_summary("rougeL",       all_rouge,    n)
+        _print_batch_summary("bertscore_f1", all_bert,     n)
+        _print_batch_summary("coverage",     all_coverage, n)
 
         # Warn if sample is too small for statistical reliability
-        if len(py_files) < 10:
+        if n < 10:
             print(
-                f"\n  ⚠  Only {len(py_files)} file(s) tested. "
+                f"\n  ⚠  Only {n} file(s) tested. "
                 "Results have high variance.\n"
                 "     Use 10–15 files minimum for a reliable comparison.\n"
             )
         return
 
     # ── Single-file mode ──────────────────────────────────────
-    # Single file uses direct custom_reference (or None to execute weak proxy lookup)
     rouge_scores, bertscore_scores, coverage_scores, winning_model, hypotheses, metadata = run_single_file(
         target_filepath, args,
         tfidf_model, bm25_model, lsa_model, baseline_model,

@@ -64,6 +64,7 @@ function scoreFor(entry: Record<string, ScoreMap> | null | undefined, key: strin
 
 export default function App() {
   const [files, setFiles] = useState<File[]>([]);
+  const [referenceFiles, setReferenceFiles] = useState<File[]>([]);
   const [metric, setMetric] = useState('rougeL');
   const [topN, setTopN] = useState(2);
   const [loading, setLoading] = useState(false);
@@ -80,6 +81,16 @@ export default function App() {
     }
     return `${files.length} Python files queued for a batch run.`;
   }, [files]);
+
+  const referenceSummary = useMemo(() => {
+    if (referenceFiles.length === 0) {
+      return 'Optional: upload hand-written reference summaries as .txt files.';
+    }
+    if (referenceFiles.length === 1) {
+      return `${referenceFiles[0].name} will be matched by exact filename or stem.`;
+    }
+    return `${referenceFiles.length} reference files ready for filename matching.`;
+  }, [referenceFiles]);
 
   function mergeFiles(nextFiles: File[]) {
     const combined = [...files];
@@ -128,6 +139,43 @@ export default function App() {
     setFiles((current) => current.filter((file) => file.name !== name));
   }
 
+  function mergeReferenceFiles(nextFiles: File[]) {
+    const combined = [...referenceFiles];
+
+    for (const file of nextFiles) {
+      if (!file.name.endsWith('.txt') && !file.name.endsWith('.md')) {
+        setError('Reference files must be .txt or .md documents.');
+        return;
+      }
+
+      const duplicate = combined.some(
+        (existing) =>
+          existing.name === file.name &&
+          existing.size === file.size &&
+          existing.lastModified === file.lastModified,
+      );
+
+      if (!duplicate) {
+        combined.push(file);
+      }
+    }
+
+    setError('');
+    setReferenceFiles(combined);
+  }
+
+  function handleReferenceInput(event: React.ChangeEvent<HTMLInputElement>) {
+    const selected = Array.from(event.target.files ?? []);
+    if (selected.length > 0) {
+      mergeReferenceFiles(selected);
+    }
+    event.target.value = '';
+  }
+
+  function removeReference(name: string) {
+    setReferenceFiles((current) => current.filter((file) => file.name !== name));
+  }
+
   async function handleAnalyze() {
     if (files.length === 0) {
       setError('Add at least one Python file.');
@@ -141,6 +189,7 @@ export default function App() {
     try {
       const formData = new FormData();
       files.forEach((file) => formData.append('files', file));
+      referenceFiles.forEach((file) => formData.append('references', file));
       formData.append('metric', metric);
       formData.append('top_n', String(topN));
 
@@ -248,6 +297,27 @@ export default function App() {
               <span>Choose files or drag and drop them here</span>
               <small>Up to {MAX_FILES} files, analyzed together as one demo batch.</small>
             </label>
+
+            <label className="dropzone reference-zone">
+              <input type="file" multiple accept=".txt,.md,text/plain" onChange={handleReferenceInput} />
+              <span>Optional reference summaries</span>
+              <small>Upload .txt or .md files that match each Python file by exact name or stem, like scaler.txt.</small>
+            </label>
+
+            {referenceFiles.length > 0 ? (
+              <div className="file-list reference-list">
+                {referenceFiles.map((file) => (
+                  <div key={`${file.name}-${file.size}-${file.lastModified}`} className="file-pill reference-pill">
+                    <span>{file.name}</span>
+                    <button type="button" onClick={() => removeReference(file.name)}>
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="reference-hint">{referenceSummary}</p>
+            )}
 
             <div className="controls">
               <label>
