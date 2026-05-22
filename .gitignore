@@ -1,0 +1,19 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Generated model/cache artifacts
+bm25_index.pkl
+
+# Python test/runtime artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# React/Vite outputs
+web/node_modules/
+web/dist/
+web/.vite/
