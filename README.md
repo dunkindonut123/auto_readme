@@ -1,8 +1,7 @@
 ---
 title: Auto README Studio
-emoji: 📝
-colorFrom: slate
-colorTo: cyan
+colorFrom: blue
+colorTo: purple
 sdk: docker
 app_port: 7860
 pinned: false
