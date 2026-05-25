@@ -4,7 +4,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-
+*.pyc
 # Generated model/cache artifacts
 bm25_index.pkl
 
