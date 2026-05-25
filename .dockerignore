@@ -1,0 +1,17 @@
+.git
+.gitignore
+.DS_Store
+.vscode
+.venv
+.venv-1
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.swp
+node_modules
+web/node_modules
+web/dist
+test_corpus.zip
+references.zip
+bm25_index.pkl

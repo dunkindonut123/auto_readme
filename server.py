@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 from email.parser import BytesParser
 from email.policy import default as email_default_policy
@@ -11,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from urllib.parse import unquote, urlsplit
 
 import app as pipeline
 import readme_engine as re_eng
@@ -19,6 +21,8 @@ import readme_engine as re_eng
 MAX_FILES = 10
 DEFAULT_TOP_N = 2
 DEFAULT_METRIC = "rougeL"
+PROJECT_ROOT = Path(__file__).resolve().parent
+WEB_DIST_DIR = PROJECT_ROOT / "web" / "dist"
 
 
 def _send_json(handler: BaseHTTPRequestHandler, payload: dict, status: int = HTTPStatus.OK) -> None:
@@ -31,6 +35,40 @@ def _send_json(handler: BaseHTTPRequestHandler, payload: dict, status: int = HTT
     handler.send_header("Access-Control-Allow-Headers", "Content-Type")
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def _send_static_file(handler: BaseHTTPRequestHandler, file_path: Path) -> None:
+    data = file_path.read_bytes()
+    content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(data)))
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
+def _serve_frontend(handler: BaseHTTPRequestHandler) -> bool:
+    if not WEB_DIST_DIR.exists():
+        return False
+
+    path = unquote(urlsplit(handler.path).path)
+    relative_path = path.lstrip("/")
+    if not relative_path or path == "/":
+        relative_path = "index.html"
+
+    candidate = (WEB_DIST_DIR / relative_path).resolve()
+    if not candidate.is_file():
+        candidate = (WEB_DIST_DIR / "index.html").resolve()
+        if not candidate.is_file():
+            return False
+
+    try:
+        candidate.relative_to(WEB_DIST_DIR.resolve())
+    except ValueError:
+        return False
+
+    _send_static_file(handler, candidate)
+    return True
 
 
 def _safe_filename(filename: str | None, fallback_index: int) -> str:
@@ -60,7 +98,6 @@ def _parse_uploads(handler: BaseHTTPRequestHandler) -> tuple[list[dict], str, in
     files: list[dict] = []
     metric = DEFAULT_METRIC
     top_n = DEFAULT_TOP_N
-    # Mapping of filename or stem -> reference text
     references_map: dict[str, str] = {}
 
     for part in multipart_message.iter_parts():
@@ -74,7 +111,6 @@ def _parse_uploads(handler: BaseHTTPRequestHandler) -> tuple[list[dict], str, in
             files.append({"filename": filename, "content": content})
             continue
 
-        # Allow uploading reference text files. Field name can be 'reference' or 'references'.
         if field_name in ("reference", "references") and part.get_filename():
             ref_name = Path(part.get_filename()).name
             try:
@@ -82,7 +118,6 @@ def _parse_uploads(handler: BaseHTTPRequestHandler) -> tuple[list[dict], str, in
             except Exception:
                 ref_text = part.get_content() if isinstance(part.get_content(), str) else ""
             if ref_text:
-                # store under both the filename and the stem for flexible lookup
                 stem = Path(ref_name).stem
                 references_map[ref_name] = ref_text
                 references_map[stem] = ref_text
@@ -115,7 +150,6 @@ def _analyse_batch(files: list[dict], metric: str, top_n: int, references_map: d
             path.write_bytes(item["content"])
             file_paths.append(path)
 
-        # Merge repository-stored references with uploaded references_map
         references_map = references_map or {}
         repo_refs_dir = Path("references")
         if repo_refs_dir.exists() and repo_refs_dir.is_dir():
@@ -139,7 +173,6 @@ def _analyse_batch(files: list[dict], metric: str, top_n: int, references_map: d
 
         for path in file_paths:
             file_args = SimpleNamespace(**vars(analysis_args))
-            # Prefer exact filename match, fall back to stem match for references
             custom_ref = None
             if references_map:
                 custom_ref = references_map.get(path.name) or references_map.get(path.stem)
@@ -198,7 +231,7 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path in {"/", "/api/health"}:
+        if self.path == "/api/health":
             _send_json(
                 self,
                 {
@@ -208,6 +241,25 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+
+        if self.path.startswith("/api/"):
+            _send_json(self, {"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+            return
+
+        if _serve_frontend(self):
+            return
+
+        if self.path == "/":
+            _send_json(
+                self,
+                {
+                    "status": "ok",
+                    "message": "Auto README demo API is running.",
+                    "max_files": MAX_FILES,
+                },
+            )
+            return
+
         _send_json(self, {"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802

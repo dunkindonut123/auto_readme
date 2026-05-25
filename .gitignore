@@ -17,3 +17,6 @@ bm25_index.pkl
 web/node_modules/
 web/dist/
 web/.vite/
+bm25_index.pkl
+.venv
+.venv-1
