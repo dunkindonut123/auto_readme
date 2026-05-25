@@ -501,6 +501,78 @@ class LeadSentenceBaseline:
 
 
 # ══════════════════════════════════════════════════════════════
+# Ranking Model 4 — TextRank
+# ══════════════════════════════════════════════════════════════
+
+
+class TextRankModel:
+    """
+    Lightweight TextRank implementation for extractive summarization.
+
+    Builds a sentence similarity graph (based on token overlap) and runs
+    a PageRank-like iterative algorithm to score sentences.
+    """
+
+    def __init__(self, damping: float = 0.85, max_iter: int = 100, tol: float = 1e-4):
+        self.damping = damping
+        self.max_iter = max_iter
+        self.tol = tol
+
+    def fit(self, corpus: list[str]) -> "TextRankModel":
+        # TextRank is unsupervised and corpus-agnostic for our use, so no
+        # fitting is necessary. Keep method for API compatibility.
+        return self
+
+    def summarize(self, sentences: list[str], top_n: int = 2) -> list[str]:
+        if not sentences:
+            return []
+
+        n = len(sentences)
+        if n <= top_n:
+            return sentences[:top_n]
+
+        tokenized = [set(tokenize(s)) for s in sentences]
+
+        # Build symmetric similarity matrix based on token overlap. Use a
+        # small normalisation to prefer stronger overlaps but avoid zeros.
+        sim = np.zeros((n, n), dtype=float)
+        for i in range(n):
+            for j in range(i + 1, n):
+                a = tokenized[i]
+                b = tokenized[j]
+                if not a or not b:
+                    continue
+                inter = len(a & b)
+                if inter == 0:
+                    continue
+                # normalise by log-lengths to reduce bias from long sentences
+                denom = (math.log(len(a) + 1) + math.log(len(b) + 1))
+                score = inter / denom if denom > 0 else inter
+                sim[i, j] = sim[j, i] = score
+
+        # Column-stochastic transition matrix for PageRank update
+        col_sum = sim.sum(axis=0)
+        M = np.zeros_like(sim)
+        for j in range(n):
+            if col_sum[j] > 0:
+                M[:, j] = sim[:, j] / col_sum[j]
+            else:
+                M[:, j] = 1.0 / n
+
+        scores = np.ones(n, dtype=float) / n
+        for _ in range(self.max_iter):
+            new_scores = (1 - self.damping) / n + self.damping * (M @ scores)
+            if np.linalg.norm(new_scores - scores, ord=1) < self.tol:
+                scores = new_scores
+                break
+            scores = new_scores
+
+        ranked = sorted(zip(sentences, scores), key=lambda x: -x[1])
+        selected = {s for s, _ in ranked[:top_n]}
+        return [s for s in sentences if s in selected]
+
+
+# ══════════════════════════════════════════════════════════════
 # ROUGE Evaluation
 # ══════════════════════════════════════════════════════════════
 

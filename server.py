@@ -130,7 +130,7 @@ def _analyse_batch(files: list[dict], metric: str, top_n: int, references_map: d
                             pass
 
         corpus = pipeline.build_local_corpus(tmpdir, verbose=False)
-        tfidf_model, bm25_model, lsa_model, baseline_model = pipeline.fit_all_models(
+        tfidf_model, bm25_model, lsa_model, textrank_model = pipeline.fit_all_models(
             corpus, verbose=False
         )
 
@@ -150,7 +150,7 @@ def _analyse_batch(files: list[dict], metric: str, top_n: int, references_map: d
                 tfidf_model,
                 bm25_model,
                 lsa_model,
-                baseline_model,
+                textrank_model,
                 verbose=False,
                 custom_reference=custom_ref,
             )
@@ -226,8 +226,8 @@ class DemoRequestHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    host = os.environ.get("AUTO_README_HOST", "127.0.0.1")
-    port = int(os.environ.get("AUTO_README_PORT", "8000"))
+    host = os.environ.get("AUTO_README_HOST", os.environ.get("HOST", "0.0.0.0"))
+    port = int(os.environ.get("PORT", os.environ.get("AUTO_README_PORT", "8000")))
     server = ThreadingHTTPServer((host, port), DemoRequestHandler)
     print(f"[API] Serving on http://{host}:{port}")
     try:

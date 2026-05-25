@@ -95,20 +95,17 @@ def build_local_corpus(root_dir: str, verbose: bool = True) -> list[str]:
 def fit_all_models(
     corpus: list[str],
     verbose: bool = True,
-) -> tuple[re_eng.TFIDFModel, re_eng.BM25Model, re_eng.LSAModel, re_eng.LeadSentenceBaseline]:
+) -> tuple[re_eng.TFIDFModel, re_eng.BM25Model, re_eng.LSAModel, re_eng.TextRankModel]:
     """
     Fit the three comparison models (TF-IDF, BM25, LSA) on the local corpus
-    and initialise the Lead Sentence baseline. Return all four as a tuple.
-
-    The baseline is stateless (no training needed) but is included here so
-    the caller always receives everything it needs from a single call.
+    and initialise TextRank. Return all models as a tuple.
 
     Args:
         corpus:  List of training sentences (output of build_local_corpus).
         verbose: Print status messages when True.
 
     Returns:
-        Tuple of (TFIDFModel, BM25Model, LSAModel, LeadSentenceBaseline),
+        Tuple of (TFIDFModel, BM25Model, LSAModel, TextRankModel),
         all ready to call .summarize() on.
     """
     if verbose:
@@ -124,10 +121,10 @@ def fit_all_models(
     lsa_model = re_eng.LSAModel().fit(corpus)
 
     if verbose:
-        print("[Models] Initialising Lead Sentence baseline (no training required)...")
-    baseline_model = re_eng.LeadSentenceBaseline()
+        print("[Models] Initialising TextRank (no training required)...")
+    textrank_model = re_eng.TextRankModel().fit(corpus)
 
-    return tfidf_model, bm25_model, lsa_model, baseline_model
+    return tfidf_model, bm25_model, lsa_model, textrank_model
 
 
 # ══════════════════════════════════════════════════════════════
@@ -139,16 +136,12 @@ def run_all_summaries(
     tfidf_model:     re_eng.TFIDFModel,
     bm25_model:      re_eng.BM25Model,
     lsa_model:       re_eng.LSAModel,
-    baseline_model:  re_eng.LeadSentenceBaseline,
+    textrank_model:  re_eng.TextRankModel,
     top_n:           int = 2,
 ) -> dict[str, list[str]]:
     """
-    Run the three comparison models and the Lead Sentence baseline on the
-    candidate sentences and return all four summaries.
-
-    The baseline is always run so the ROUGE table immediately shows whether
-    any of the three models outperform simply taking the first sentence —
-    the minimum bar every summarizer must clear.
+    Run the three comparison models on the candidate sentences and return
+    their summaries.
 
     Args:
         candidates:  Flat list of docstring sentences from the target file.
@@ -156,13 +149,13 @@ def run_all_summaries(
 
     Returns:
         Dict mapping model name → list of selected summary sentences.
-        Keys: "lead" (baseline), "tfidf", "bm25", "lsa".
+        Keys: "tfidf", "bm25", "lsa", "textrank".
     """
     return {
-        "lead":  baseline_model.summarize(candidates, top_n=top_n),
         "tfidf": tfidf_model.summarize(candidates,    top_n=top_n),
         "bm25":  bm25_model.summarize(candidates,     top_n=top_n),
         "lsa":   lsa_model.summarize(candidates,      top_n=top_n),
+        "textrank": textrank_model.summarize(candidates, top_n=top_n),
     }
 
 
@@ -346,7 +339,7 @@ def run_single_file(
     tfidf_model: re_eng.TFIDFModel,
     bm25_model: re_eng.BM25Model,
     lsa_model: re_eng.LSAModel,
-    baseline_model: re_eng.LeadSentenceBaseline,
+    textrank_model: re_eng.TextRankModel,
     verbose: bool = True,
     custom_reference: str | None = None,
 ) -> tuple:
@@ -388,7 +381,7 @@ def run_single_file(
 
     hypotheses = run_all_summaries(
         candidates, tfidf_model, bm25_model, lsa_model,
-        baseline_model, top_n=args.top_n,
+        textrank_model, top_n=args.top_n,
     )
 
     # Determine reference and whether it is a weak proxy
@@ -491,7 +484,7 @@ def main() -> None:
     corpus      = build_local_corpus(project_dir, verbose=verbose)
 
     # ── Step 2: Fit all models (including baseline) ───────────
-    tfidf_model, bm25_model, lsa_model, baseline_model = fit_all_models(
+    tfidf_model, bm25_model, lsa_model, textrank_model = fit_all_models(
         corpus, verbose=verbose
     )
 
@@ -529,25 +522,25 @@ def main() -> None:
                     # Fall back to the single loaded reference if directory logic was not targeted
                     file_specific_reference = custom_reference
 
-            try:
-                rouge_s, bert_s, cov_s, _, _, _ = run_single_file(
-                    py_path, args,
-                    tfidf_model, bm25_model, lsa_model, baseline_model,
-                    verbose=False,
-                    custom_reference=file_specific_reference,
-                )
-                for model, s in rouge_s.items():
-                    all_rouge.setdefault(model, []).append(s["rougeL"])
-                    print(f"    {model:<12} rougeL: {s['rougeL']:.4f}", end="")
-                    if bert_s and model in bert_s:
-                        all_bert.setdefault(model, []).append(bert_s[model]["bertscore_f1"])
-                        print(f"   bertscore_f1: {bert_s[model]['bertscore_f1']:.4f}", end="")
-                    if cov_s and model in cov_s:
-                        all_coverage.setdefault(model, []).append(cov_s[model]["combined"])
-                        print(f"   coverage: {cov_s[model]['combined']:.4f}", end="")
-                    print()
-            except Exception as exc:
-                print(f"    [Skip] {exc}")
+                try:
+                    rouge_s, bert_s, cov_s, _, _, _ = run_single_file(
+                        py_path, args,
+                        tfidf_model, bm25_model, lsa_model, textrank_model,
+                        verbose=False,
+                        custom_reference=file_specific_reference,
+                    )
+                    for model, s in rouge_s.items():
+                        all_rouge.setdefault(model, []).append(s["rougeL"])
+                        print(f"    {model:<12} rougeL: {s['rougeL']:.4f}", end="")
+                        if bert_s and model in bert_s:
+                            all_bert.setdefault(model, []).append(bert_s[model]["bertscore_f1"])
+                            print(f"   bertscore_f1: {bert_s[model]['bertscore_f1']:.4f}", end="")
+                        if cov_s and model in cov_s:
+                            all_coverage.setdefault(model, []).append(cov_s[model]["combined"])
+                            print(f"   coverage: {cov_s[model]['combined']:.4f}", end="")
+                        print()
+                except Exception as exc:
+                    print(f"    [Skip] {exc}")
 
         n = len(py_files)
         _print_batch_summary("rougeL",       all_rouge,    n)
@@ -566,7 +559,7 @@ def main() -> None:
     # ── Single-file mode ──────────────────────────────────────
     rouge_scores, bertscore_scores, coverage_scores, winning_model, hypotheses, metadata = run_single_file(
         target_filepath, args,
-        tfidf_model, bm25_model, lsa_model, baseline_model,
+        tfidf_model, bm25_model, lsa_model, textrank_model,
         verbose=verbose,
         custom_reference=custom_reference,
     )

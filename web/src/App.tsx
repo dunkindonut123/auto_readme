@@ -42,6 +42,8 @@ const METRICS = [
   { value: 'combined', label: 'Combined' },
 ];
 
+const API_BASE = import.meta.env.VITE_API_URL || '';
+
 function formatScore(value: number | boolean | undefined): string {
   if (typeof value !== 'number') {
     return '—';
@@ -193,7 +195,7 @@ export default function App() {
       formData.append('metric', metric);
       formData.append('top_n', String(topN));
 
-      const response = await fetch('/api/analyze', {
+      const response = await fetch(`${API_BASE}/api/analyze`, {
         method: 'POST',
         body: formData,
       });
